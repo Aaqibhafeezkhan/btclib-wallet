@@ -30,7 +30,10 @@ from btclib.tx import TxOut
 
 from btclib_wallet.exceptions import FetchError
 from btclib_wallet.ledger import APPLICATION_ID, FORMAT_VERSION, Ledger, store
+from tests import raises_alone
 from tests.ledger.conftest import LOOKAHEAD, FakeChain, script_of, source
+from tests.refused_value_test import KEY, SPELLINGS
+from tests.secret_free import assert_secret_free
 
 _PYPY = platform.python_implementation() == "PyPy"
 # what a copy SQLite refuses to write raises: PyPy's `Connection.backup`
@@ -132,14 +135,61 @@ def test_a_backup_refuses_anything_at_its_path(
         ledger.backup(b"ledger.bak")  # type: ignore[arg-type]
 
 
-def test_a_backup_into_a_missing_directory_is_refused(
-    ledger: Ledger, tmp_path: Path
+@pytest.mark.parametrize("parent", ["missing", "a file"])
+def test_a_file_the_system_cannot_make_is_refused_by_its_class(
+    ledger: Ledger, chain: FakeChain, tmp_path: Path, parent: str
 ) -> None:
-    """The system's own refusal, with nothing made."""
-    target = tmp_path / "missing" / "ledger.bak"
-    with pytest.raises(FileNotFoundError):
-        ledger.backup(target)
-    assert not target.parent.exists()
+    """A key's hex in the path is in no refusal (issue #821).
+
+    The system's `OSError` holds the path, so the refusal names its class
+    alone and chains nothing: under a missing directory, and under a file,
+    which POSIX and Windows refuse as different classes.
+    """
+    backup = tmp_path / "ledger.bak"
+    ledger.backup(backup)
+    if parent == "a file":
+        (tmp_path / parent).write_bytes(b"")
+    target = tmp_path / parent / KEY.hex()
+    for call in (
+        lambda: ledger.backup(target),
+        lambda: Ledger.create(target, "regtest", chain),
+        lambda: Ledger.restore(backup, target, "regtest", chain),
+    ):
+        with raises_alone(BTClibValueError, r"^cannot make the ledger file: \w+$") as e:
+            call()
+        assert_secret_free(e.value, SPELLINGS)
+        assert not target.exists()
+
+
+@pytest.mark.skipif(
+    os.name != "posix" or os.geteuid() == 0,
+    reason="a directory's search permission binds a POSIX user who is not root",
+)
+def test_a_parent_that_cannot_be_searched_is_in_no_refusal(
+    ledger: Ledger, chain: FakeChain, tmp_path: Path
+) -> None:
+    """Where the parent cannot be searched, no question asked of it leaks.
+
+    Python before 3.14 raises the `PermissionError` of asking whether the
+    file exists, which names the path, where 3.14 answers False (issue
+    #821).
+    """
+    parent = tmp_path / KEY.hex()
+    parent.mkdir()
+    target = parent / "ledger.sqlite"
+    parent.chmod(0)
+    try:
+        for call in (
+            lambda: ledger.backup(target),
+            lambda: Ledger.create(target, "regtest", chain),
+        ):
+            with raises_alone(
+                BTClibValueError, r"^cannot make the ledger file: PermissionError$"
+            ) as e:
+                call()
+            assert_secret_free(e.value, SPELLINGS)
+    finally:
+        parent.chmod(stat.S_IRWXU)
 
 
 def test_a_backup_that_cannot_open_its_file_leaves_none(
@@ -155,6 +205,10 @@ def test_a_backup_that_cannot_open_its_file_leaves_none(
     with pytest.raises(BTClibValueError, match="cannot open the ledger file"):
         ledger.backup(backup)
     assert not backup.exists()
+
+
+# the path is the caller's and SQLite's text is not relayed
+_COPY_REFUSED = "^cannot copy the ledger file: OperationalError$"
 
 
 def test_a_copy_that_cannot_write_names_the_copy_and_leaves_none(
@@ -177,12 +231,12 @@ def test_a_copy_that_cannot_write_names_the_copy_and_leaves_none(
     second = tmp_path / "second.bak"
     with pytest.raises(_COPY_REFUSALS) as refused:
         ledger.backup(second)
-    assert _PYPY or re.match("cannot copy into .*readonly", str(refused.value))
+    assert _PYPY or re.match(_COPY_REFUSED, str(refused.value))
     assert not second.exists()
     restored = tmp_path / "restored.sqlite"
     with pytest.raises(_COPY_REFUSALS) as refused:
         Ledger.restore(backup, restored, "regtest", chain)
-    assert _PYPY or re.match("cannot copy into .*readonly", str(refused.value))
+    assert _PYPY or re.match(_COPY_REFUSED, str(refused.value))
     assert not restored.exists()
 
 
@@ -270,11 +324,13 @@ def test_a_restore_is_refused_and_leaves_nothing(
     with db:
         db.execute("CREATE TABLE t(x INTEGER)")
     db.close()
-    with pytest.raises(BTClibValueError, match="application id 0x0"):
+    with pytest.raises(BTClibValueError, match="not a ledger file: application id 0"):
         Ledger.restore(foreign, target, "regtest", chain)
     assert not target.exists()
 
-    with pytest.raises(BTClibValueError, match="a regtest ledger file, not a testnet"):
+    with pytest.raises(
+        BTClibValueError, match="^not a testnet ledger file: its network is regtest$"
+    ):
         Ledger.restore(backup, target, "testnet", chain)
     assert not target.exists()
 

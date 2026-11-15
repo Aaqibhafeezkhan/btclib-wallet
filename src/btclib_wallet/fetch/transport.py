@@ -48,9 +48,11 @@ delimiter consumed rather than included -- bytes on both sides, the shape
 boundary needs no encoding step of its own, the same reason `HttpTransport` is
 bytes in and bytes out. A transport that cannot answer raises
 `bitcoin_core_rpc`'s own `FetchError` or a subclass of it,
-the vocabulary `HttpTransport` already raises through this same package;
-`btclib_wallet.fetch.fetcher.client_errors` is what translates it, at every
-`ElectrumFetcher` call the way it is at every other backend's.
+the vocabulary `HttpTransport` already raises through this same package.
+The line transports this module ships raise `_TransportError`, which is
+this package's `FetchError` too. `ElectrumFetcher` makes every call under
+`btclib_wallet.fetch.fetcher.client_errors`, whose docstring says what of
+each reaches its caller.
 
 **`LineTransport` carries no host, so each implementation is an object
 that does.** One constructed with a host and a port is the callable
@@ -92,6 +94,7 @@ from btclib.utils import is_integer
 
 from btclib_wallet._refusal import _message_text, _quoted
 from btclib_wallet.electrum import _reply_ids, _request_ids
+from btclib_wallet.exceptions import FetchError as _PackageFetchError
 
 LineTransport = Callable[[bytes, float], bytes]
 
@@ -110,6 +113,18 @@ __all__ = [
     "urlopen_transport",
     "valid_timeout",
 ]
+
+
+class _TransportError(_PackageFetchError, FetchError):
+    """A failure of a transport this package ships, in both vocabularies.
+
+    `bitcoin_core_rpc`'s `FetchError` is what `LineTransport` and
+    `PeerTransport` raise, and this package's `FetchError` is what
+    `client_errors` lets through as it is: the text is composed here,
+    where the census of `tests/refusal_census_test.py` reads it, and not
+    by another program.
+    """
+
 
 # how much one read asks for: a recv allocates what it is asked for, so a
 # limit widened for one large answer is not paid on every small one
@@ -167,7 +182,7 @@ def _time_left(deadline: float, timeout: float, where: str) -> float:
     """
     remaining = deadline - monotonic()
     if remaining <= 0:
-        raise FetchError(f"{where}: timeout expired before an answer arrived")
+        raise _TransportError(f"{where}: timeout expired before an answer arrived")
     return min(remaining, timeout)
 
 
@@ -203,14 +218,16 @@ def _open_connection(
                 sock.settimeout(left)
                 sock.connect(sockaddr)
             except OSError as e:
-                sock.close()
                 error = e
-                continue
             except BaseException:
                 # a `KeyboardInterrupt` leaves no socket open behind it
                 sock.close()
                 raise
-            return sock
+            else:
+                return sock
+            # closed after the handler, so that a close that fails raises
+            # its own error, with no connect error as its context
+            sock.close()
         raise error
     finally:
         # the error's traceback holds this frame, so the frame lets go of
@@ -242,13 +259,13 @@ def _read_line(
             del buffer[: end + 1]
             return line
         if len(buffer) > max_line_size:
-            err_msg = f"{where}: line longer than the max_line_size of {max_line_size}"
-            raise FetchError(err_msg)
+            err_msg = f"{where}: line longer than the max_line_size of {_quoted(max_line_size)}"
+            raise _TransportError(err_msg)
         connection.settimeout(_time_left(deadline, timeout, where))
         if chunk := connection.recv(min(_READ_CHUNK, max_line_size + 1 - len(buffer))):
             buffer.extend(chunk)
         else:
-            raise FetchError(f"{where}: connection closed before a whole line")
+            raise _TransportError(f"{where}: connection closed before a whole line")
 
 
 def _valid_endpoint(host: str, port: int, max_line_size: int) -> None:
@@ -326,8 +343,9 @@ def _exchange(
     _valid_request(request)
     valid_timeout(timeout)
 
-    where = f"{host}:{port}"
+    where = f"{_quoted(host)}:{_quoted(port)}"
     deadline = monotonic() + timeout
+    failure = ""
     try:
         with _open_connection((host, port), deadline, timeout, where) as sock:
             connection = sock
@@ -342,8 +360,11 @@ def _exchange(
                 )
     except OSError as e:
         # `ssl.SSLError`, `socket.gaierror` and `TimeoutError` all derive
-        # from it, which makes it every way the exchange did not happen
-        raise FetchError(f"no answer from {where}: {e}") from e
+        # from it, which makes it every way the exchange did not happen.
+        # Named by its class and raised after the block, so it is not
+        # chained: a certificate that does not match names the host
+        failure = type(e).__name__
+    raise _TransportError(f"no answer from {where}: {failure}")
 
 
 class TlsLineTransport:
@@ -392,9 +413,10 @@ class TlsLineTransport:
 
     Everything that goes wrong below the answer -- an unresolvable host, a
     refused connection, a handshake the certificate fails, a timeout, a
-    connection closed before a whole line, a line over the limit -- is
-    `bitcoin_core_rpc`'s `FetchError`, the contract `LineTransport` states,
-    which `ElectrumFetcher` translates into this package's own.
+    connection closed before a whole line, a line over the limit -- is a
+    `_TransportError`: `bitcoin_core_rpc`'s `FetchError`, the contract
+    `LineTransport` states, and this package's own, which `ElectrumFetcher`
+    lets through as it is.
     """
 
     def __init__(
@@ -527,7 +549,7 @@ def _line_ids(line: bytes, where: str) -> frozenset[int] | None:
         ids = _reply_ids(line)
         refused = False
     if refused:
-        raise FetchError(f"{where}: a line that is no JSON-RPC message")
+        raise _TransportError(f"{where}: a line that is no JSON-RPC message")
     return ids
 
 
@@ -636,10 +658,13 @@ class PersistentTlsLineTransport:
         self._sent.clear()
         if self._connection is not None:
             connection, self._connection = self._connection, None
-            try:
+            # refused after `suppress`, so that it chains nothing
+            with suppress(OSError):
                 connection.close()
-            except OSError as e:
-                raise FetchError(f"closing {self._host}:{self._port}: {e}") from e
+                return
+            raise _TransportError(
+                f"closing {_quoted(self._host)}:{_quoted(self._port)}"
+            )
 
     def _discard(self) -> None:
         """Close the connection after a failure, which stays the one raised."""
@@ -657,18 +682,22 @@ class PersistentTlsLineTransport:
         ids = _request_ids(request)
         valid_timeout(timeout)
 
-        where = f"{self._host}:{self._port}"
+        where = f"{_quoted(self._host)}:{_quoted(self._port)}"
         deadline = monotonic() + timeout
         if not self._lock.acquire(timeout=timeout):
-            raise FetchError(f"{where}: timeout expired before an answer arrived")
+            raise _TransportError(f"{where}: timeout expired before an answer arrived")
+        failure = ""
         try:
             return self._answer(request, ids, where, deadline, timeout)
         except OSError as e:
             # `ssl.SSLError`, `socket.gaierror` and `TimeoutError` all derive
-            # from it, which makes it every way the exchange did not happen
-            raise FetchError(f"no answer from {where}: {e}") from e
+            # from it, which makes it every way the exchange did not happen.
+            # Named by its class and raised after the block, as
+            # `_exchange` does
+            failure = type(e).__name__
         finally:
             self._lock.release()
+        raise _TransportError(f"no answer from {where}: {failure}")
 
     def _answer(
         self,
@@ -712,7 +741,7 @@ class PersistentTlsLineTransport:
             if answered is not None:
                 if not answered or answered == ids:
                     return line
-                raise FetchError(f"{where}: a line answering another request")
+                raise _TransportError(f"{where}: a line answering another request")
 
     def _connected(
         self, ids: frozenset[int], where: str, deadline: float, timeout: float
@@ -738,7 +767,10 @@ class PersistentTlsLineTransport:
                 sock.settimeout(_time_left(deadline, timeout, where))
                 connection = self._context.wrap_socket(sock, server_hostname=self._host)
             except BaseException:
-                sock.close()
+                # a close that fails would put its OSError in the place of
+                # what the handshake raised, which the refusal names
+                with suppress(OSError):
+                    sock.close()
                 raise
             self._connection = connection
         return connection
