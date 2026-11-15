@@ -285,7 +285,7 @@ from btclib.tx.limits import COINBASE_MATURITY
 from btclib.tx.tx_in import input_weight
 from btclib.utils import assert_type, is_integer
 
-from btclib_wallet._refusal import _label, _quoted
+from btclib_wallet._refusal import _label, _position, _quoted
 from btclib_wallet.bip32.bip32 import fingerprint
 from btclib_wallet.coin_selection import Candidate, select_coins
 from btclib_wallet.descriptors import normalized, parse
@@ -1650,10 +1650,9 @@ class Ledger:
         relay = self._relay_fees()
         if fee_rate is not None:
             if relay is not None and fee_rate < relay.min_relay:
-                err_msg = (
-                    f"fee rate {_quoted(fee_rate.sats_per_kvbyte)} sat/kvB is below"
-                )
-                err_msg += f" the minimum relay rate {_quoted(relay.min_relay.sats_per_kvbyte)}"
+                err_msg = f"fee rate {_quoted(fee_rate.sats_per_kvbyte)} is below"
+                err_msg += " the minimum relay rate "
+                err_msg += f"{_position(relay.min_relay.sats_per_kvbyte)} sat/kvB"
                 raise BTClibValueError(err_msg)
             return fee_rate
         rate = self._estimated(_CONFIRMATION_TARGET, relay)
@@ -1915,9 +1914,8 @@ class Ledger:
         except _WrongKeyError:
             if was_held and not self._holds(key):
                 raise BTClibValueError(_LOCKED_DURING) from None
-            err_msg = (
-                f"not a ledger file: source {_quoted(source_id)}'s keys do not decrypt"
-            )
+            err_msg = f"not a ledger file: source {_position(source_id)}'s keys"
+            err_msg += " do not decrypt"
             raise BTClibValueError(err_msg) from None
         held = None
         try:
@@ -1929,13 +1927,12 @@ class Ledger:
         finally:
             _wipe(plaintext)
         if not isinstance(held, dict):
-            err_msg = (
-                f"not a ledger file: source {_quoted(source_id)}'s keys are unreadable"
-            )
+            err_msg = f"not a ledger file: source {_position(source_id)}'s keys"
+            err_msg += " are unreadable"
             raise BTClibValueError(err_msg)
         prv_keys = held.get("prv_keys")
         if not isinstance(prv_keys, dict):
-            err_msg = f"not a ledger file: source {_quoted(source_id)}'s prv_keys"
+            err_msg = f"not a ledger file: source {_position(source_id)}'s prv_keys"
             err_msg += " is not a JSON object"
             raise BTClibValueError(err_msg)
         return _wallet(
@@ -2230,11 +2227,9 @@ class Ledger:
         """
         if fee_rate is not None:
             if relay is not None and fee_rate < relay.mempool_min:
-                err_msg = (
-                    f"fee rate {_quoted(fee_rate.sats_per_kvbyte)} sat/kvB is below"
-                )
+                err_msg = f"fee rate {_quoted(fee_rate.sats_per_kvbyte)} is below"
                 err_msg += " the mempool's minimum"
-                err_msg += f" {_quoted(relay.mempool_min.sats_per_kvbyte)}"
+                err_msg += f" {_position(relay.mempool_min.sats_per_kvbyte)} sat/kvB"
                 raise BTClibValueError(err_msg)
             return fee_rate
         incremental = (
@@ -2520,7 +2515,7 @@ class Ledger:
         A ciphertext with no master key to decrypt it is refused, and so
         are keys in plain text in an encrypted file.
         """
-        err_msg = f"not a ledger file: source {_quoted(source_id)}'s keys"
+        err_msg = f"not a ledger file: source {_position(source_id)}'s keys"
         if source.prv_keys and self._master_key is not None:
             raise BTClibValueError(f"{err_msg} are plain in an encrypted file")
         if source.encrypted is not None:
@@ -2677,8 +2672,8 @@ def _fee_from_change(
     amount = value - (fee - probe.fee)
     if amount < dust_threshold(_script(change)):
         reason = "to pay the fee" if amount < 0 else "to send after the fee"
-        err_msg = f"the amount, {_quoted(value)} satoshi, is too small {reason}, "
-        err_msg += _quoted(fee)
+        err_msg = f"the amount, {_quoted(value)}, is too small {reason}, "
+        err_msg += f"{_position(fee)} satoshi"
         raise BTClibValueError(err_msg)
     _assert_fee_within(fee, vsize, DEFAULT_MAX_FEE, DEFAULT_MAX_FEE_RATE)
     psbt.outputs[0].amount = amount
@@ -2716,9 +2711,9 @@ def _assert_replaces(old_fee: int, fee: int, vsize: int, incremental: FeeRate) -
     """
     least = old_fee + fee_from_vsize(vsize, incremental)
     if fee < least:
-        err_msg = f"insufficient total fee {_quoted(fee)} satoshi, must be at least "
-        err_msg += f"{_quoted(least)} (old fee {_quoted(old_fee)} + incremental fee "
-        err_msg += f"{_quoted(least - old_fee)})"
+        err_msg = f"insufficient total fee {_quoted(fee)}, must be at least "
+        err_msg += f"{_position(least)} satoshi (old fee {_position(old_fee)}"
+        err_msg += f" + incremental fee {_position(least - old_fee)})"
         raise BTClibValueError(err_msg)
 
 
