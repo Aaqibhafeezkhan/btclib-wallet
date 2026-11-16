@@ -28,6 +28,7 @@ from btclib_wallet.psbt.psbt import Psbt, extract_tx, finalize
 from btclib_wallet.psbt.psbt_size import miniscript_sizer
 from btclib_wallet.psbt_signer import SoftwareSigner
 from btclib_wallet.wallet import DescriptorWallet
+from tests.ledger import ConformingStr, ObjectClaimingStr, StrWithNoClass
 from tests.ledger.conftest import (
     ONE_SAT,
     REFUSED_BROADCAST,
@@ -122,6 +123,47 @@ def test_comments_are_kept_with_a_spend_and_in_the_file(
         ledger.spend([_outside()], comment=1)  # type: ignore[arg-type]
     with pytest.raises(BTClibTypeError, match="invalid comment_to type"):
         ledger.spend([_outside()], comment_to=1)  # type: ignore[arg-type]
+
+
+def test_a_comment_is_written_as_the_str_it_holds(
+    ledger: Ledger, chain: FakeChain, path: Path
+) -> None:
+    """The str each holds, kept and written whatever its own methods answer.
+
+    An empty comment is the exact "" too.
+    """
+    _funded(ledger, chain)
+    spent = ledger.spend(
+        [_outside()], comment=ConformingStr("c"), comment_to=ConformingStr("")
+    )
+    kept = _wtx(ledger, spent)
+    assert (type(kept.comment), type(kept.comment_to)) == (str, str)
+    ledger.close()
+    with Ledger.load(path, "regtest", chain) as loaded:
+        held = _wtx(loaded, spent)
+        assert (held.comment, held.comment_to) == ("c", "")
+
+
+def test_a_comment_is_a_str_by_its_type_whatever_its_class_claims(
+    ledger: Ledger, chain: FakeChain
+) -> None:
+    """An object that claims str is refused, a str whose class raises is not."""
+    claimant = ObjectClaimingStr()
+    _funded(ledger, chain)
+    with pytest.raises(BTClibTypeError, match="^invalid comment type: Object"):
+        ledger.spend([_outside()], comment=claimant)  # type: ignore[arg-type]
+    with pytest.raises(BTClibTypeError, match="^invalid comment_to type: Object"):
+        ledger.spend([_outside()], comment_to=claimant)  # type: ignore[arg-type]
+    spent = ledger.spend(
+        [_outside()], comment=StrWithNoClass("c"), comment_to=StrWithNoClass("t")
+    )
+    kept = _wtx(ledger, spent)
+    held = [(type(text), text) for text in (kept.comment, kept.comment_to)]
+    assert held == [(str, "c"), (str, "t")]
+    # what isinstance reads of each, which the ledger must not ask
+    with pytest.raises(RuntimeError, match="no __class__"):
+        isinstance(StrWithNoClass("c"), bool)
+    assert isinstance(claimant, str)
 
 
 def test_a_bump_replaces_the_spend_and_links_the_two(
