@@ -49,7 +49,8 @@ _XPUB = xpub_from_xprv(rootxprv_from_seed("00" * 32))
 # check wants
 _ACCOUNT_XPRV = derive(rootxprv_from_seed("00" * 32), "m/44h/0h/0h")
 _DESCRIPTOR = parse(f"wpkh({_XPUB}/*)")
-_WALLET = DescriptorWallet([_DESCRIPTOR])
+_CHANGE_DESCRIPTOR = parse(f"wpkh({_XPUB}/1/*)")
+_WALLET = DescriptorWallet([_DESCRIPTOR, _CHANGE_DESCRIPTOR])
 
 
 def _psbt(**field: Any) -> Psbt:
@@ -142,6 +143,9 @@ _CASES: list[tuple[str, Callable[[Any], object]]] = [
     ),
     # a ledger writes the label's str(), and cannot read "True" back
     ("descriptor wallet branch", lambda v: DescriptorWallet({v: _DESCRIPTOR})),
+    # `_assert_position` checks membership in `branches`, which `False == 0`
+    # and `True == 1` pass (issue #923)
+    ("wallet position branch", lambda v: _WALLET.address(v, 0)),
 ]
 
 _IDS = [case[0] for case in _CASES]
@@ -215,6 +219,7 @@ def test_the_integers_a_bool_refusal_must_not_take_with_it() -> None:
     assert _DESCRIPTOR.index_of(_DESCRIPTOR.script_pub_key(1), 1) == 1
     assert _WALLET.position_of(_DESCRIPTOR.script_pub_key(1), 1) == (0, 1)
     assert DescriptorWallet({1: _DESCRIPTOR}).branches == (1,)
+    assert _WALLET.address(1, 0) == _CHANGE_DESCRIPTOR.script_pub_key(0).address
 
     # the str and bytes spellings of a path are untouched by any of it
     assert indexes_from_der_path("m/44h/0h") == [2147483692, 2147483648]
@@ -235,6 +240,10 @@ def test_what_is_no_integer_at_all_is_refused_the_same_way() -> None:
         DescriptorWallet({1.0: _DESCRIPTOR})  # type: ignore[dict-item]
     with pytest.raises(BTClibTypeError, match="invalid branch type: str"):
         DescriptorWallet({"0": _DESCRIPTOR})  # type: ignore[dict-item]
+    with pytest.raises(BTClibTypeError, match="invalid branch type: float"):
+        _WALLET.address(1.0, 0)  # type: ignore[arg-type]
+    with pytest.raises(BTClibTypeError, match="invalid branch type: str"):
+        _WALLET.address("0", 0)  # type: ignore[arg-type]
 
     claims_int: Any = property(lambda _self: int)
 
@@ -332,8 +341,12 @@ def test_a_branch_is_an_int_by_its_type_whatever_its_class_claims() -> None:
     with pytest.raises(RuntimeError, match="no __class__"):
         isinstance(RaisesClass(5), bool)
     assert isinstance(ClaimsBool(5), bool)
-    assert DescriptorWallet({RaisesClass(5): _DESCRIPTOR}).branches == (5,)
-    assert DescriptorWallet({ClaimsBool(7): _DESCRIPTOR}).branches == (7,)
+    raising = DescriptorWallet({RaisesClass(5): _DESCRIPTOR})
+    assert raising.branches == (5,)
+    assert raising.address(RaisesClass(5), 0) == raising.address(5, 0)
+    claiming = DescriptorWallet({ClaimsBool(7): _DESCRIPTOR})
+    assert claiming.branches == (7,)
+    assert claiming.address(ClaimsBool(7), 0) == claiming.address(7, 0)
     wallet = source()
     assert _new_address(0, RaisesClass(0)) == wallet.address(0, 0)
     assert _new_address(0, ClaimsBool(1)) == wallet.address(1, 0)
