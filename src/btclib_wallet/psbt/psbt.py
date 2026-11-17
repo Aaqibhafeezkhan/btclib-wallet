@@ -55,7 +55,7 @@ from btclib.script import (
     taproot,
     type_and_payload,
 )
-from btclib.script.engine import verify_input, verify_transaction
+from btclib.script.engine import PAY_TO_ANCHOR, verify_input, verify_transaction
 from btclib.script.limits import MAX_SCRIPT_SIZE, MAX_STACK_SIZE
 from btclib.script.script import op_code_spans
 from btclib.script.sig_hash import (
@@ -2185,6 +2185,16 @@ def _is_taproot(psbt_in: PsbtIn) -> bool:
     return prev_out is not None and is_p2tr(prev_out.script_pub_key.script)
 
 
+def _spends_anchor(psbt_in: PsbtIn) -> bool:
+    """Return whether the input spends a pay-to-anchor output.
+
+    The output's script_pub_key is the anchor script itself, bare: a
+    p2sh-wrapped one is a different script and is not this.
+    """
+    prev_out = _prev_out(psbt_in)
+    return prev_out is not None and prev_out.script_pub_key.script == PAY_TO_ANCHOR
+
+
 def _spends_unknown_witness_program(psbt_in: PsbtIn) -> bool:
     """Return whether the input spends a witness program of no known rule.
 
@@ -3904,12 +3914,23 @@ def finalize(psbt: Psbt, *, solver: InputSolver | None = None) -> Psbt:
     same finalized state this function produces, which is where Bitcoin
     Core's own `PSBTInput::Serialize` does it too.
 
-    Deciding that an input has enough data is three checks beyond the
-    presence of a signature, all per input: the sighash type each
-    signature commits to is one the input accepts, each signature
-    verifies against the key it is filed under, and the key of a p2pkh
-    or p2wpkh input, wrapped or not, is the one its script commits to,
-    and compressed for a p2wpkh.
+    An input spending a bare pay-to-anchor output has enough data with
+    no signature at all: its spend is an empty scriptSig and an empty
+    witness, which verify (src/script/sign.cpp:722-723 and
+    src/script/interpreter.cpp:2000-2001 at bitcoin/bitcoin@f0de87f040,
+    the v32.1 tag). `PsbtIn.serialize` writes neither empty field, and
+    so drops nothing from that input, as Core's `PSBTInput::Serialize`
+    does (src/psbt.h:371 and 509-517). A partial signature such an
+    input carries is verified as any other is, and refused, since no
+    sighash rule covers its witness program; Core's `SignPSBTInput`
+    leaves it unread (src/psbt.cpp:652 at bitcoin/bitcoin@a527a00).
+
+    For any other input, deciding that it has enough data is three
+    checks beyond the presence of a signature, all per input: the
+    sighash type each signature commits to is one the input accepts,
+    each signature verifies against the key it is filed under, and the
+    key of a p2pkh or p2wpkh input, wrapped or not, is the one its
+    script commits to, and compressed for a p2wpkh.
 
     What is then built is the spend the input's own kind asks for, which
     is what _finalized_input dispatches on: a witness script alone does
@@ -3959,6 +3980,13 @@ def finalize(psbt: Psbt, *, solver: InputSolver | None = None) -> Psbt:
         # aggregate signature of a MuSig2 session into them
         elif _is_taproot(psbt_in):
             script_sig, witness = _finalized_taproot_input(psbt, vin_i)
+        # a pay-to-anchor output is spent by nothing at all: Bitcoin Core's
+        # SignStep solves it with no signature, and the spend is empty
+        # (src/script/sign.cpp:722-723 at bitcoin/bitcoin@f0de87f040).
+        # Whatever partial signatures the input carries are still
+        # verified, as they are under a solver's spend
+        elif _spends_anchor(psbt_in):
+            script_sig, witness = _finalized_by_caller(psbt, vin_i, (b"", Witness()))
         else:
             if not psbt_in.partial_sigs:
                 raise BTClibValueError("missing signatures")
