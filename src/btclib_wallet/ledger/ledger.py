@@ -1027,23 +1027,26 @@ class Ledger:
         `sync` reads its history from, and `None` reads none before the
         tip the ledger holds, as Core's `timestamp: "now"` does;
         `fetch.start_height_for_time` turns a birth time into a height.
-        A `lookahead` above `MAX_LOOKAHEAD` is refused. The wallet is
-        written to the file whole, its private keys included, and `load`
-        builds it again from its descriptors and keys. In an encrypted
-        ledger its keys are written encrypted, as `store` says, and a
-        wallet holding keys is refused while the ledger is locked, where
-        another thread zeroed the master key while its keys were
-        encrypted, and where its scripts need a private key at every
-        index (a hardened ``/*h``), which a locked ledger could not
-        derive. `label` is set on the one address of branch 0, where its
-        script has one, and refused where that branch is ranged or
-        missing, as Core refuses a label on a ranged descriptor
+        A `lookahead` above `MAX_LOOKAHEAD` is refused, and so is a
+        `birth_height` above the largest SQLite INTEGER, 2**63 - 1,
+        which the file cannot hold. The wallet is written to the file
+        whole, its private keys included, and `load` builds it again
+        from its descriptors and keys. In an encrypted ledger its keys
+        are written encrypted, as `store` says, and a wallet holding
+        keys is refused while the ledger is locked, where another thread
+        zeroed the master key while its keys were encrypted, and where
+        its scripts need a private key at every index (a hardened
+        ``/*h``), which a locked ledger could not derive. `label` is set
+        on the one address of branch 0, where its script has one, and
+        refused where that branch is ranged or missing, as Core refuses
+        a label on a ranged descriptor
         (src/wallet/rpc/backup.cpp:213-216 at
         bitcoin/bitcoin@f0de87f040, the v32.1 tag).
         """
         assert_type(wallet, DescriptorWallet, "wallet")
         if birth_height is not None:
             birth_height = _checked_height(birth_height, "birth_height")
+            _assert_birth_height(birth_height)
         lookahead = _checked_height(lookahead, "lookahead")
         _assert_lookahead(lookahead)
         if wallet.network != self.network:
@@ -3305,6 +3308,17 @@ def _checked_height(value: int, name: str) -> int:
     if number < 0:
         raise BTClibValueError(f"negative {name}: {_quoted(number)}")
     return number
+
+
+# the largest SQLite INTEGER, signed and 64 bits wide: the most the
+# `birth` column of the `sources` table holds
+_SQLITE_INT_MAX = 2**63 - 1
+
+
+def _assert_birth_height(birth_height: int) -> None:
+    """Refuse a birth_height the ledger file cannot hold."""
+    if birth_height > _SQLITE_INT_MAX:
+        raise BTClibValueError(f"birth_height too large: {_quoted(birth_height)}")
 
 
 def _assert_lookahead(lookahead: int) -> None:
