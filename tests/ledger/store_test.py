@@ -833,6 +833,31 @@ _NO_LOOKAHEAD = (
             str(MAX_LOOKAHEAD + 1),
             _NO_LOOKAHEAD,
         ),
+        (
+            "UPDATE sources SET birth = ?",
+            "x",
+            "^not a ledger file: source 0's birth is not a non-negative integer$",
+        ),
+        (
+            "UPDATE sources SET birth = ?",
+            "-3",
+            "^not a ledger file: source 0's birth is not a non-negative integer$",
+        ),
+        (
+            "UPDATE sources SET scanned = ?",
+            "x",
+            "^not a ledger file: source 0's scanned is neither 0 nor 1$",
+        ),
+        (
+            "UPDATE sources SET scanned = ?",
+            "2",
+            "^not a ledger file: source 0's scanned is neither 0 nor 1$",
+        ),
+        (
+            "UPDATE sources SET scanned = ?",
+            "-1",
+            "^not a ledger file: source 0's scanned is neither 0 nor 1$",
+        ),
     ],
     ids=[
         "network",
@@ -854,6 +879,11 @@ _NO_LOOKAHEAD = (
         "lookahead of a real",
         "negative lookahead",
         "lookahead above MAX_LOOKAHEAD",
+        "text birth",
+        "negative birth",
+        "text scanned",
+        "scanned of 2",
+        "negative scanned",
     ],
 )
 def test_a_key_in_a_damaged_file_is_in_no_refusal(
