@@ -66,6 +66,16 @@ from btclib_wallet.psbt.psbt_updater import update_psbt_input, update_psbt_outpu
 # the failure case
 _STARTUP_TIMEOUT = 30.0
 
+# how long an rpc call to the node is given, in place of the client's
+# default: mining the blocks that make a coinbase spendable, in one call,
+# outlasts that default on a loaded machine. It stays below the suite's
+# `timeout` by more than `_STARTUP_TIMEOUT`, so that where a test opens by
+# starting its node and the next call stalls, the client's error comes
+# before pytest-timeout ends the test. A test's waits count it once;
+# `pyproject.toml`'s `timeout` says what a test does whose waits pass the
+# suite's bound
+_RPC_TIMEOUT = 180.0
+
 # the wallet of the session's node that pays the first wallet of each
 # `wallets`, and what it pays it: more than any test on `wallets` spends,
 # so a test that spends more raises it
@@ -181,9 +191,13 @@ def _wait_for(
     """Poll until the node answers, or fail with what it did instead.
 
     A node that exited because its rpc port is taken raises `PortTaken`.
+
+    Each poll is given what is left of `_STARTUP_TIMEOUT`, in place of
+    the client's `_RPC_TIMEOUT`, so that a node that takes the connection
+    and never answers fails the start within that bound.
     """
     deadline = time.monotonic() + _STARTUP_TIMEOUT
-    while time.monotonic() < deadline:
+    while (left := deadline - time.monotonic()) > 0:
         if process.poll() is not None:
             log = (
                 debug_log.read_text(encoding="utf-8", errors="replace")
@@ -194,9 +208,10 @@ def _wait_for(
                 raise PortTaken(log)
             pytest.fail(f"bitcoind exited with {process.returncode}")
         try:
-            client.call("getblockchaininfo")
+            client.call("getblockchaininfo", request_timeout=left)
         # every failure before the node is up is the same failure: the
-        # cookie file is not written yet, or the socket is not listening
+        # cookie file is not written yet, the socket is not listening, or
+        # the node took the probe and did not answer in time
         except Exception:  # noqa: BLE001
             time.sleep(0.1)
         else:
@@ -339,6 +354,11 @@ ELECTRS_ENV = "BTCLIB_ELECTRS"
 # how long the server is given to catch up with the node: a generous bound
 # on the failure case only
 _SYNC_TIMEOUT = 60.0
+
+# what `running_stack` waits for before it yields, each wait run to its
+# deadline: the node's start, its blocks mined in one call and the
+# server's sync
+_STACK_WAITS = _STARTUP_TIMEOUT + _RPC_TIMEOUT + _SYNC_TIMEOUT
 
 
 # how many times the program (the node or the server) is started, each on
@@ -514,7 +534,9 @@ def _start_node(
         _bitcoind_args(bitcoind, datadir, port, p2p_port, extra), datadir / "stdout.log"
     )
     client = BitcoinCoreRpcClient(
-        f"http://127.0.0.1:{port}", cookie_path=datadir / "regtest" / ".cookie"
+        f"http://127.0.0.1:{port}",
+        cookie_path=datadir / "regtest" / ".cookie",
+        timeout=_RPC_TIMEOUT,
     )
     try:
         _wait_for(client, process, datadir / "regtest" / "debug.log")
