@@ -52,6 +52,12 @@ class _PastBounds(int):
         return False
 
 
+def test_past_bounds_greater_than_comparison_is_false() -> None:
+    """Exercise the overridden greater-than comparison directly."""
+    result = _PastBounds(SCALAR) > 1008
+    assert not result
+
+
 class _PastOne(int):
     """An int that is less than any int above 1.
 
@@ -99,7 +105,7 @@ class _PastOne(int):
             lambda: esplora_fetcher((200, fee_estimates(**{"1": 10}))).estimate_fee(
                 _PastBounds(SCALAR)
             ),
-            "^fee-estimates: no target quoted at or above the one asked$",
+            "^confirmation target an int of 256 bits above the highest quoted, 1008$",
         ),
         (
             lambda: electrum_fetcher(-1).estimate_fee(SCALAR),
