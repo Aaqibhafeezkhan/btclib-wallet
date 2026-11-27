@@ -39,8 +39,9 @@ RAW = recorded_body("esplora_tx_hex.txt").decode().strip()
 class _PastBounds(int):
     """An int whose < and > answer False.
 
-    It passes both bounds of `EsploraFetcher.estimate_fee`, and as a
-    negative value the `max_pages < 1` of `EsploraFetcher.get_history`.
+    `EsploraFetcher.estimate_fee` compares the exact int it holds, so its upper
+    bound refuses it whatever `>` answers. As a negative value it passes the
+    `max_pages < 1` of `EsploraFetcher.get_history`.
     """
 
     @override
@@ -50,6 +51,16 @@ class _PastBounds(int):
     @override
     def __gt__(self, _other: object) -> bool:
         return False
+
+
+def test_past_bounds_greater_than_comparison_is_false() -> None:
+    """Pin `>` to False, which the esplora subclass case relies on.
+
+    With `>` false, only the exact int `estimate_fee` compares can refuse
+    the target at the upper bound.
+    """
+    result = _PastBounds(SCALAR) > 1008
+    assert not result
 
 
 class _PastOne(int):
@@ -99,7 +110,7 @@ class _PastOne(int):
             lambda: esplora_fetcher((200, fee_estimates(**{"1": 10}))).estimate_fee(
                 _PastBounds(SCALAR)
             ),
-            "^fee-estimates: no target quoted at or above the one asked$",
+            "^confirmation target an int of 256 bits above the highest quoted, 1008$",
         ),
         (
             lambda: electrum_fetcher(-1).estimate_fee(SCALAR),
@@ -124,7 +135,7 @@ class _PastOne(int):
         "compact filters stop height",
         "confirmation target",
         "esplora target",
-        "esplora target past every bound",
+        "esplora target of a subclass",
         "electrum target",
         "esplora max_pages",
         "vout",
