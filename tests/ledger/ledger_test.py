@@ -724,7 +724,7 @@ def test_a_spend_to_a_pk_change_branch_is_handed_out_and_loaded(
         funding = chain.pay([TxOut(100_000, wallet.script_pub_key(0, 0))])
         chain.mine([funding])
         ledger.sync()
-        spent = ledger.spend([_outside()])
+        spent = ledger.spend([_outside()], FeeRate.from_sats_per_vbyte(1))
         change = wallet.script_pub_key(1, 0)
         assert any(output.script_pub_key == change for output in spent.vout)
         assert ledger.position_of(change) == (0, 1, 0)
